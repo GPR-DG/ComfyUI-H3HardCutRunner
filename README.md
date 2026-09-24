@@ -1,23 +1,20 @@
 # ComfyUI-H3HardCutRunner
 
-`H3HardCutRunner` is a ComfyUI custom node for deterministic MiniMax H3
-hard-cut processing. It detects hard cuts, keeps RGB and depth ranges aligned,
-rounds each shot to a legal H3 length, runs the configured two-pass H3 path,
-performs the learned 3D latent upscale between passes, and trims/concatenates
-the decoded shot results.
+This plugin contains three independent MiniMax H3 hard-cut runner nodes:
 
-The node keeps seed and shot identity deterministic, uses the installed
-ComfyUI node registry as its execution boundary, and adapts the installed
-`MinimaxH3LatentUpscaler3D` callable by inspected signature. It supports the
-verified current xmarre configuration-dictionary contract, the RH-era LBH
-configuration-dictionary plus `enable_chunking` contract, the newer temporal-
-chunking contract, and the legacy flat contract. It fails closed for an
-unknown signature. Temporal chunking remains controlled by the runner setting,
-while the project default is disabled.
+1. `H3HardCutRunner` — the original formal hard-cut runner.
+2. `H3HardCutRunnerShotPromptEmptyShot` — validation candidate A with
+   shot-local scene prompts, an empty-shot policy, and Depth as the H3
+   reference video.
+3. `H3HardCutRunnerFunControl` — validation candidate B with shot-local scene
+   prompts, an empty-shot policy, and MiniMax H3 Fun Control Depth.
 
-Install by copying this directory into `ComfyUI/custom_nodes/` and restarting
-ComfyUI. The workflow must provide the standard MiniMax H3 model, CLIP, video
-VAE, sampler, sigma schedules, RGB/depth inputs, two reference images, and
-the learned 3D upscaler checkpoint. The node returns decoded images, FPS,
-frame count, and a diagnostic report; it does not expose an AUDIO output.
+Candidate B additionally requires `MiniMaxH3FunControlNetApply`,
+`ModelPatchLoader`, and the model patch
+`minimax_h3_fun_controlnet_union_pruned_int8_convrot.safetensors` to exist in
+the target ComfyUI environment. RunningHub support for those dependencies is
+not asserted here; the runtime requires them to be installed and registered.
 
+A and B are validation candidates, not proven final-production runners. Keep
+the three node types as separate modules so they can be tested independently.
+Install this directory under `ComfyUI/custom_nodes/` and restart ComfyUI.
