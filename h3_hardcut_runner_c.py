@@ -1212,4 +1212,3 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "H3HardCutRunnerSceneVLM": "H3 Hard-Cut Runner C (Scene VLM + Picture3)",
     "H3HardCutRunnerSceneVLMFunControl": "H3 Hard-Cut Runner D (Scene VLM + Fun ControlNet)",
 }
-
