@@ -1,7 +1,8 @@
 # ComfyUI-H3HardCutRunner
 
-This plugin contains five independent MiniMax H3 hard-cut runner nodes plus a
-shot-local scene-analysis helper:
+This plugin retains five independent MiniMax H3 hard-cut runner nodes and a
+shot-local scene-analysis helper for compatibility. The formal C workflow now
+uses the modular C nodes described below instead of the legacy C runner.
 
 1. `H3HardCutRunner` — the original formal hard-cut runner.
 2. `H3HardCutRunnerShotPromptEmptyShot` — validation candidate A with
@@ -27,9 +28,31 @@ fields and separates source-protagonist presence from secondary/background human
 signals for diagnosis; only the source-protagonist field controls reference
 injection.
 
-Picture3 is a capability-only optional back-garment reference. When it is not
-connected, Runner C omits the third H3 reference entirely; it is not a root-
+Picture3 is a capability-only optional back-garment reference. In the modular
+C workflow the upload node is connected to the policy node; no selected image
+produces `None`, which the H3 reference node omits. Picture3 is not a root-
 cause fix for garment, prop, or accessory drift.
+
+## Modular C workflow
+
+`H3CShotPlanner`, `H3CShotSelectPad`, `H3CShotPolicy`, and
+`H3CPromptCompiler` expose the shot manifest, aligned RGB/Depth, per-shot
+reference decisions, and both final prompts. `H3CShotTrim`,
+`H3COrderedMergeStep`, and `H3COrderedMergeFinish` restore original shot
+lengths and enforce ordered, full-length output. The canvas uses Easy-Use's
+`easy forLoopStart` / `easy forLoopEnd` and visible Comfy/RH H3 conditioning,
+noise, guider, two-pass sampling, AV split/concat, latent upscaling, VAE decode,
+CreateVideo, and SaveVideo nodes. The VLM node appends raw and normalized
+diagnostic outputs without changing its first three outputs.
+
+Static contract tests are not RunningHub execution proof. Verify the installed
+Easy-Use loop version, H3 autogrow `ref_image_2`/`ref_video_0`, and a multi-shot
+run on the target RH instance before treating this workflow as deployed. The
+Shot1/9 appearance reversions, Shot2/8 waist leakage, Shot5 sleeve transfer,
+Shot7 secondary-person contamination, Depth-reference competition, VLM
+semantic leakage, whole-image Picture2 reference, first-pass structure lock,
+and 39-frame quality risk remain open for RH A/B diagnosis. The modularization
+does not claim to fix any of them.
 
 Complex optional Picture3 wording in production prompts must be wrapped in
 `[[PICTURE3_CONTRACT_BEGIN]]` and `[[PICTURE3_CONTRACT_END]]`. Runner C/D keeps
@@ -54,4 +77,3 @@ A, B, C, and D are validation candidates, not proven final-production
 runners. Keep every node type as a separate module so they can be tested
 independently.
 Install this directory under `ComfyUI/custom_nodes/` and restart ComfyUI.
-

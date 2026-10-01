@@ -238,6 +238,9 @@ def _parse_scene_prompts(value: str) -> dict[int, dict[str, Any]]:
             if secondary not in {"none", "present", "uncertain"}:
                 secondary = "uncertain"
         record["secondary_human_presence"] = secondary
+        scene_fields = obj.get("scene_fields")
+        if isinstance(scene_fields, dict):
+            record["scene_fields"] = scene_fields
         prop = _text(obj.get("source_prop_policy", obj.get("subject_associated_prop_policy"))).lower()
         if prop in {"none", "present", "absent", "uncertain"}:
             record["source_prop_policy"] = prop
@@ -660,8 +663,12 @@ class H3ShotSceneVLM:
             }
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "STRING")
-    RETURN_NAMES = ("shot_prompts", "empty_shot_indices", "report")
+    RETURN_TYPES = ("STRING",) * 10
+    RETURN_NAMES = (
+        "shot_prompts", "empty_shot_indices", "report", "raw_vlm_output",
+        "normalised_vlm_output", "scene_fields", "subject_mode",
+        "secondary_human_presence", "source_prop_policy", "vlm_runtime",
+    )
     FUNCTION = "run"
     CATEGORY = "video/MiniMaxH3"
 
@@ -682,6 +689,11 @@ class H3ShotSceneVLM:
     ):
         shots = _detect_hard_cuts(rgb, cut_threshold, min_shot_frames)
         rows: list[str] = []
+        raw_rows: list[str] = []
+        scene_field_rows: list[str] = []
+        subject_modes: list[str] = []
+        secondary_modes: list[str] = []
+        source_props: list[str] = []
         empty: list[str] = []
         report = [
             "H3ShotSceneVLM: deterministic shot-local analysis",
@@ -708,7 +720,12 @@ class H3ShotSceneVLM:
             )
             record = _normalise_scene_record(response, shot_index)
             record["shot"] = shot_index
+            raw_rows.append(json.dumps({"shot": shot_index, "raw": response}, ensure_ascii=False, separators=(",", ":")))
             rows.append(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+            scene_field_rows.append(json.dumps({"shot": shot_index, "scene_fields": record["scene_fields"]}, ensure_ascii=False, separators=(",", ":")))
+            subject_modes.append(json.dumps({"shot": shot_index, "value": record["subject_mode"]}, ensure_ascii=False, separators=(",", ":")))
+            secondary_modes.append(json.dumps({"shot": shot_index, "value": record["secondary_human_presence"]}, ensure_ascii=False, separators=(",", ":")))
+            source_props.append(json.dumps({"shot": shot_index, "value": record.get("source_prop_policy", "unspecified")}, ensure_ascii=False, separators=(",", ":")))
             if (
                 record["subject_mode"] == "absent"
                 and record["secondary_human_presence"] == "none"
@@ -724,8 +741,11 @@ class H3ShotSceneVLM:
             )
         if len(rows) != len(shots):
             raise RuntimeError("VLM/prompt shot count mismatch")
-        report.append("vlm_runtime=" + json.dumps(scene_vlm.report_snapshot(), ensure_ascii=False, sort_keys=True))
-        return ("\n".join(rows), ",".join(empty), "\n".join(report))
+        runtime_json = json.dumps(scene_vlm.report_snapshot(), ensure_ascii=False, sort_keys=True)
+        report.append("vlm_runtime=" + runtime_json)
+        return ("\n".join(rows), ",".join(empty), "\n".join(report), "\n".join(raw_rows),
+                "\n".join(rows), "\n".join(scene_field_rows), "\n".join(subject_modes),
+                "\n".join(secondary_modes), "\n".join(source_props), runtime_json)
 
 
 class H3OptionalPicture3:
