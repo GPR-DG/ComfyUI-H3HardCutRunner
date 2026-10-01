@@ -77,3 +77,31 @@ A, B, C, and D are validation candidates, not proven final-production
 runners. Keep every node type as a separate module so they can be tested
 independently.
 Install this directory under `ComfyUI/custom_nodes/` and restart ComfyUI.
+
+## Repository layout and C Modular checks
+
+```text
+ComfyUI-H3HardCutRunner/
+├── __init__.py
+├── h3_hardcut_runner_a.py
+├── h3_hardcut_runner_b.py
+├── h3_hardcut_runner_c.py
+├── h3_hardcut_runtime.py
+├── h3_hardcut_modular_c.py
+├── tools/
+│   └── build_h3_modular_c.py
+└── tests/
+    └── test_h3_modular_c.py
+```
+
+The seven C Modular node classes intentionally remain in one Python module;
+`NODE_CLASS_MAPPINGS` registers each as a separate canvas node.
+
+From the repository root, run `python tools/build_h3_modular_c.py` and
+`python -m unittest discover -s tests -p 'test_h3_modular_c.py'`. The builder
+requires the immutable C baseline under the surrounding project directory's
+`work/modular_c_baseline_20261001/` and writes the formal C JSON under its
+`outputs/`. When the repository is checked out elsewhere, set
+`H3_C_PROJECT_ROOT` to the project directory containing those two folders.
+The baseline and generated workflow are deliberately not part of this plugin
+repository. Building and unit tests do not execute RunningHub generation.
