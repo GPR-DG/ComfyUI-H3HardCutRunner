@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 import sys
@@ -16,6 +17,7 @@ import numpy as np
 PLUGIN = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = Path(os.environ.get("H3_C_PROJECT_ROOT", PLUGIN.parents[2])).resolve()
 WORKFLOW = PROJECT_ROOT / "outputs" / "H3_V16_hardcut_runner_RH_SCENE_VLM_C.json"
+A2_WORKFLOW = PROJECT_ROOT / "outputs" / "H3_V16_hardcut_runner_RH_SCENE_VLM_C_A2_FORCE_REFS.json"
 BASELINE = PROJECT_ROOT / "work" / "modular_c_baseline_20261001" / WORKFLOW.name
 
 
@@ -140,6 +142,148 @@ class ModularCContractTests(unittest.TestCase):
         self.assertEqual(empty[12:16], (False, False, False, 1000))
         with self.assertRaises(ValueError):
             mod.H3CShotPolicy().run(rows, "2", 1, 3, 999, picture, picture)
+
+    def test_force_present_overrides_auto_empty_and_cleans_both_prompts(self):
+        from h3_modular_test_pkg import h3_hardcut_modular_c as mod
+        from h3_modular_test_pkg import h3_hardcut_runner_c as c
+        fields = {
+            "scene": "atrium", "space_structure": "arched corridor",
+            "environment_objects": "wooden bench",
+            "foreground_midground_background": "bench in foreground",
+            "materials_colors": "brown stone", "lighting": "soft daylight",
+            "color_temperature_palette": "warm amber", "composition_camera": "tracking camera",
+            "scene_motion": "curtains moving", "temporal_structure": "slow pan",
+        }
+        raw = {"subject_mode": "absent", "secondary_human_presence": "present", **fields}
+        record = c._normalise_scene_record(json.dumps(raw), 1)
+        rows = json.dumps({"shot": 1, **record})
+        picture = Tensor(np.ones((1, 1, 1, 3)))
+        policy = mod.H3CShotPolicy().run(rows, "1", 1, 1, 999, picture, picture,
+                                         picture3=picture, manual_force_present_indices="1")
+        self.assertEqual(policy[3:6], (False, False, True))
+        self.assertEqual(policy[12:16], (True, True, True, 999))
+        self.assertIn("manual_force_present", policy[10])
+        prompts = mod.H3CPromptCompiler().run(rows, 1, "first global", "second global",
+                                               policy[3], policy[4], policy[11])
+        for prompt in prompts[:2]:
+            for value in fields.values():
+                self.assertIn(value, prompt)
+            for forbidden in ("No person is visible", "source primary protagonist absent",
+                              "Secondary-human policy"):
+                self.assertNotIn(forbidden, prompt)
+        self.assertEqual(json.loads(prompts[2]), fields)
+
+    def test_force_present_secondary_uncertain_and_picture3_optional(self):
+        from h3_modular_test_pkg import h3_hardcut_modular_c as mod
+        rows = json.dumps({"shot": 1, "prompt": "No person is visible as the source primary protagonist; "
+                            "preserve only source-visible secondary/background humans without injecting the target identity.\n"
+                            "Scene: station", "subject_mode": "absent",
+                            "secondary_human_presence": "uncertain", "scene_fields": {"scene": "station"}})
+        picture = Tensor(np.ones((1, 1, 1, 3)))
+        policy = mod.H3CShotPolicy().run(rows, "", 1, 1, 999, picture, picture,
+                                         picture3=None, manual_force_present_indices="1")
+        self.assertEqual(policy[3:6], (False, False, True))
+        self.assertEqual(policy[12:16], (True, True, False, 999))
+        prompt = mod.H3CPromptCompiler().run(rows, 1, "first", "second", *policy[3:5], False)[0]
+        self.assertIn("station", prompt)
+        self.assertNotIn("No person is visible", prompt)
+
+    def test_forced_primary_keeps_secondary_people_separate(self):
+        from h3_modular_test_pkg import h3_hardcut_modular_c as mod
+        from h3_modular_test_pkg import h3_hardcut_runner_c as c
+        picture = Tensor(np.ones((1, 1, 1, 3)))
+        for secondary in ("present", "uncertain"):
+            with self.subTest(secondary=secondary):
+                source_present = c._normalise_scene_record(json.dumps({
+                    "subject_mode": "present", "secondary_human_presence": secondary, "scene": "hall"
+                }), 1)
+                misclassified = c._normalise_scene_record(json.dumps({
+                    "subject_mode": "absent", "secondary_human_presence": secondary, "scene": "hall"
+                }), 1)
+                normal_prompt = mod.H3CPromptCompiler().run(
+                    json.dumps({"shot": 1, **source_present}), 1, "first", "second", False, False, False)[0]
+                rows = json.dumps({"shot": 1, **misclassified})
+                policy = mod.H3CShotPolicy().run(rows, "", 1, 1, 999, picture, picture,
+                                                 manual_force_present_indices="1")
+                self.assertEqual(policy[3:6], (False, False, True))
+                forced_prompts = mod.H3CPromptCompiler().run(rows, 1, "first", "second", *policy[3:5], False)
+                protection = "preserve source-visible secondary/background humans as separate non-target people"
+                self.assertIn(protection, normal_prompt)
+                for prompt in forced_prompts[:2]:
+                    self.assertIn(protection, prompt)
+                    self.assertNotIn("source primary protagonist absent", prompt)
+
+    def test_policy_report_distinguishes_source_and_effective_presence(self):
+        from h3_modular_test_pkg import h3_hardcut_modular_c as mod
+        rows = json.dumps({"shot": 1, "prompt": "Scene: hall", "subject_mode": "absent"})
+        picture = Tensor(np.ones((1, 1, 1, 3)))
+        report = mod.H3CShotPolicy().run(rows, "1", 1, 1, 999, picture, picture,
+                                         manual_force_present_indices="1")[10]
+        self.assertIn("source_subject_mode=absent", report)
+        self.assertIn("effective_subject_mode=present", report)
+
+    def test_cleanup_never_silently_deletes_multiline_scene_content(self):
+        from h3_modular_test_pkg import h3_hardcut_modular_c as mod
+        from h3_modular_test_pkg import h3_hardcut_runner_c as c
+        record = c._normalise_scene_record(json.dumps({
+            "subject_mode": "absent", "secondary_human_presence": "none",
+            "scene": "hall\nNo person is visible on a poster", "lighting": "warm"
+        }), 1)
+        with self.assertRaisesRegex(ValueError, "contradictory absent-person policy"):
+            mod.H3CPromptCompiler().run(json.dumps({"shot": 1, **record}), 1,
+                                         "first", "second", False, False, False)
+
+    def test_force_present_absent_none_and_existing_present_remain_distinct(self):
+        from h3_modular_test_pkg import h3_hardcut_modular_c as mod
+        from h3_modular_test_pkg import h3_hardcut_runner_c as c
+        records = [c._normalise_scene_record(json.dumps({
+            "subject_mode": mode, "secondary_human_presence": "none", "scene": "lit courtyard"
+        }), number) for number, mode in ((1, "absent"), (2, "present"))]
+        rows = "\n".join(json.dumps({"shot": i, **record}) for i, record in enumerate(records, 1))
+        picture = Tensor(np.ones((1, 1, 1, 3)))
+        forced = mod.H3CShotPolicy().run(rows, "1", 1, 2, 999, picture, picture,
+                                         manual_force_present_indices="1")
+        ordinary = mod.H3CShotPolicy().run(rows, "1", 2, 2, 1000, picture, picture)
+        self.assertEqual(forced[3:6], ordinary[3:6])
+        self.assertEqual(forced[12:15], ordinary[12:15])
+        prompt = mod.H3CPromptCompiler().run(rows, 1, "first", "second", *forced[3:5], False)[0]
+        self.assertIn("lit courtyard", prompt)
+        self.assertNotIn("No person is visible", prompt)
+
+    def test_force_present_fails_closed_on_contradictory_scene_field(self):
+        from h3_modular_test_pkg import h3_hardcut_modular_c as mod
+        rows = json.dumps({"shot": 1, "prompt": "No person is visible in this shot; preserve only the environment.\n"
+                           "Scene: primary protagonist absent behind a wall",
+                           "subject_mode": "absent", "secondary_human_presence": "none",
+                           "scene_fields": {"scene": "primary protagonist absent behind a wall"}})
+        with self.assertRaisesRegex(ValueError, "contradictory absent-person policy"):
+            mod.H3CPromptCompiler().run(rows, 1, "first", "second", False, False, False)
+
+    def test_force_present_conflicts_with_explicit_empty_but_not_auto_empty(self):
+        from h3_modular_test_pkg import h3_hardcut_modular_c as mod
+        rows = json.dumps({"shot": 1, "prompt": "Scene: room", "subject_mode": "absent"})
+        picture = Tensor(np.ones((1, 1, 1, 3)))
+        with self.assertRaisesRegex(ValueError, "manual_force_empty_indices.*manual_force_present_indices"):
+            mod.H3CShotPolicy().run(rows, "1", 1, 1, 999, picture, picture,
+                                    manual_force_empty_indices="1", manual_force_present_indices="1")
+        with self.assertRaisesRegex(ValueError, "manual_force_present_indices"):
+            mod.H3CShotPolicy().run(rows, "", 1, 1, 999, picture, picture,
+                                    manual_force_present_indices="2")
+        old = mod.H3CShotPolicy().run(rows, "1", 1, 1, 999, picture, picture)
+        blank = mod.H3CShotPolicy().run(rows, "1", 1, 1, 999, picture, picture,
+                                        manual_force_present_indices="")
+        self.assertEqual(old, blank)
+        self.assertTrue(old[3])
+
+    def test_force_present_leaves_other_empty_shots_unchanged(self):
+        from h3_modular_test_pkg import h3_hardcut_modular_c as mod
+        rows = "\n".join(json.dumps({"shot": i, "prompt": f"Scene: {i}",
+                                      "subject_mode": "absent"}) for i in range(1, 7))
+        picture = Tensor(np.ones((1, 1, 1, 3)))
+        policy = mod.H3CShotPolicy().run(rows, "1,2,3,4,5,6", 6, 6, 1004, picture, picture,
+                                         manual_force_present_indices="1,2,3,4,5")
+        self.assertEqual(policy[3:6], (True, False, False))
+        self.assertEqual(policy[0:3], (None, None, None))
 
     def test_trim_and_ordered_merge_enforce_frame_contract(self):
         from h3_modular_test_pkg import h3_hardcut_modular_c as mod
@@ -365,6 +509,41 @@ class ModularCContractTests(unittest.TestCase):
                 self.assertIn((716, f"picture{index + 1}", h3, f"ref_images.ref_image_{index}"), edges)
         self.assertIn((624, "denoised_output", 724, "samples"), edges)
         self.assertIn((724, "IMAGE", 725, "images"), edges)
+
+    def test_a2_builder_is_copy_only_and_preserves_dynamic_vlm_and_links(self):
+        spec = importlib.util.spec_from_file_location("h3_a2_builder", PLUGIN / "tools" / "build_h3_modular_c.py")
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        before = WORKFLOW.read_bytes()
+        old = json.loads(before)
+        self.assertEqual(builder.build_a2_force_refs(), (len(old["nodes"]), len(old["links"])))
+        self.assertEqual(WORKFLOW.read_bytes(), before)
+        first_sha = hashlib.sha256(A2_WORKFLOW.read_bytes()).hexdigest()
+        builder.build_a2_force_refs()
+        self.assertEqual(hashlib.sha256(A2_WORKFLOW.read_bytes()).hexdigest(), first_sha)
+        new = json.loads(A2_WORKFLOW.read_text(encoding="utf-8"))
+        for key in old.keys() - {"nodes", "extra"}:
+            self.assertEqual(new[key], old[key])
+        self.assertEqual(new["links"], old["links"])
+        self.assertEqual(len(new["nodes"]), len(old["nodes"]))
+        old_nodes = {n["id"]: n for n in old["nodes"]}
+        new_nodes = {n["id"]: n for n in new["nodes"]}
+        self.assertEqual(set(new_nodes), set(old_nodes))
+        for node_id in old_nodes.keys() - {716}:
+            self.assertEqual(new_nodes[node_id], old_nodes[node_id])
+        policy = new_nodes[716]
+        self.assertEqual(policy["inputs"], old_nodes[716]["inputs"])
+        self.assertEqual(old_nodes[716]["widgets_values"], ["", ""])
+        self.assertEqual([x["name"] for x in policy["inputs"]],
+                         list(self.package.NODE_CLASS_MAPPINGS["H3CShotPolicy"].INPUT_TYPES()["required"]) +
+                         list(self.package.NODE_CLASS_MAPPINGS["H3CShotPolicy"].INPUT_TYPES()["optional"]))
+        self.assertEqual(builder.A2_FORCE_PRESENT, "1,9")
+        self.assertEqual(policy["widgets_values"], ["", "1,9"])
+        self.assertEqual(policy["inputs"][-1]["link"], None)
+        self.assertEqual(new_nodes[717], old_nodes[717])
+        self.assertTrue(any(link[1] == 700 and link[3] == 717 and
+                            new_nodes[700]["outputs"][link[2]]["name"] == "shot_prompts"
+                            for link in new["links"]))
 
 
 if __name__ == "__main__":

@@ -54,6 +54,32 @@ def _manifest(value: str) -> dict:
     return obj
 
 
+def _parse_manual_force_present_indices(value: str, shot_count: int) -> set[int]:
+    try:
+        return _parse_empty_shots(value, shot_count=shot_count)
+    except ValueError as exc:
+        raise ValueError(f"manual_force_present_indices: {exc}") from exc
+
+
+def _without_overridden_absent_policy(prompt: str) -> tuple[str, list[str]]:
+    """Remove only C's exact first normalised policy line, never scene-field lines."""
+    absent_lines = (
+        "No person is visible in this shot; preserve only the environment, camera and atmosphere.",
+        "No person is visible as the source primary protagonist; preserve only source-visible "
+        "secondary/background humans without injecting the target identity.",
+    )
+    kept = str(prompt).splitlines()
+    removed = [kept.pop(0)] if kept and kept[0] in absent_lines else []
+    cleaned = "\n".join(kept)
+    if not cleaned.strip():
+        raise ValueError("force-present shot has no scene prompt after policy cleanup")
+    if any(token in cleaned.lower() for token in (
+        "no person is visible", "primary protagonist absent", "secondary-human policy"
+    )):
+        raise ValueError("force-present scene prompt retains contradictory absent-person policy")
+    return cleaned, removed
+
+
 class H3CShotPlanner:
     @classmethod
     def INPUT_TYPES(cls):
@@ -132,6 +158,7 @@ class H3CShotPolicy:
         }, "optional": {
             "picture3": ("IMAGE",),
             "manual_force_empty_indices": ("STRING", {"default": ""}),
+            "manual_force_present_indices": ("STRING", {"default": ""}),
         }}
 
     RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "BOOLEAN", "BOOLEAN", "BOOLEAN",
@@ -145,16 +172,25 @@ class H3CShotPolicy:
     CATEGORY = "video/MiniMaxH3/C Modular"
 
     def run(self, shot_prompts, empty_shot_indices, shot_number, shot_count, seed, picture1, picture2,
-            picture3=None, manual_force_empty_indices=""):
+            picture3=None, manual_force_empty_indices="", manual_force_present_indices=""):
         rows = _parse_scene_prompts(shot_prompts)
         _validate_scene_prompts(rows, int(shot_count))
         number = int(shot_number)
         if number not in rows:
             raise ValueError(f"shot {number} is missing from scene records")
         empty = _parse_empty_shots(empty_shot_indices, shot_count=int(shot_count))
-        empty |= _parse_manual_force_empty_indices(manual_force_empty_indices, shot_count=int(shot_count))
+        manual_empty = _parse_manual_force_empty_indices(manual_force_empty_indices, shot_count=int(shot_count))
+        manual_present = _parse_manual_force_present_indices(manual_force_present_indices, int(shot_count))
+        conflict = manual_empty & manual_present
+        if conflict:
+            raise ValueError("manual_force_empty_indices conflicts with manual_force_present_indices "
+                             f"for shots {sorted(conflict)}")
+        empty |= manual_empty
         record = rows[number]
-        policy = _resolve_shot_policy(record, number, empty)
+        forced_present = number in manual_present
+        policy = ({"strict_empty": False, "allow_secondary_humans": False,
+                   "inject_target_references": True} if forced_present else
+                  _resolve_shot_policy(record, number, empty))
         inject = bool(policy["inject_target_references"])
         refs = tuple(
             value if inject and _has_reference_tensor(value) else None
@@ -163,11 +199,13 @@ class H3CShotPolicy:
         mode = str(record["subject_mode"])
         secondary = str(record.get("secondary_human_presence", "none"))
         prop = str(record.get("source_prop_policy", "unspecified"))
-        reason = ("source primary present" if inject else
+        reason = ("manual_force_present" if forced_present else
+                  "source primary present" if inject else
                   "source primary absent; secondary human retained" if policy["allow_secondary_humans"] else
                   "strict empty: primary and secondary humans absent")
         uses = ["used" if ref is not None else "omitted" for ref in refs]
         report = (f"shot={number} seed={int(seed)} subject_mode={mode} secondary_human_presence={secondary} "
+                  f"source_subject_mode={mode} effective_subject_mode={'present' if inject else 'absent'} "
                   f"source_prop_policy={prop} strict_empty={bool(policy['strict_empty'])} "
                   f"picture1={uses[0]} picture2={uses[1]} picture3={uses[2]} reason={reason}")
         return (*refs, bool(policy["strict_empty"]), bool(policy["allow_secondary_humans"]),
@@ -201,15 +239,23 @@ class H3CPromptCompiler:
         if number not in rows:
             raise ValueError(f"shot {number} is missing from scene records")
         policy = "strict_empty" if strict_empty else "secondary_only" if allow_secondary_humans else "target_present"
+        record = rows[number]
+        overridden_absent = policy == "target_present" and record["subject_mode"] == "absent"
+        removed = []
+        if overridden_absent:
+            cleaned, removed = _without_overridden_absent_policy(record["prompt"])
+            if record.get("secondary_human_presence") in {"present", "uncertain"}:
+                cleaned += ("\npreserve source-visible secondary/background humans as separate non-target people "
+                            "without deleting or replacing them.")
+            rows[number] = {**record, "prompt": cleaned}
         first = _compose_shot_prompt(rows, number - 1, prompt_first, bool(strict_empty), "first",
                                      allow_secondary_humans=bool(allow_secondary_humans),
                                      picture3_present=bool(picture3_present))
         second = _compose_shot_prompt(rows, number - 1, prompt_second, bool(strict_empty), "second",
                                       allow_secondary_humans=bool(allow_secondary_humans),
                                       picture3_present=bool(picture3_present))
-        scene_fields = json.dumps(rows[number].get("scene_fields", {}), ensure_ascii=False, sort_keys=True)
-        # Equivalent-to-old-C mode: the old normaliser did not semantically filter scene fields.
-        filtered_fields = "[]"
+        scene_fields = json.dumps(record.get("scene_fields", {}), ensure_ascii=False, sort_keys=True)
+        filtered_fields = json.dumps(removed, ensure_ascii=False)
         contract = ("not_applicable" if policy != "target_present" else
                     "included" if picture3_present else "removed")
         report = f"shot={number} reference_policy={policy} picture3_contract={contract}\nFIRST PASS:\n{first}\nSECOND PASS:\n{second}"

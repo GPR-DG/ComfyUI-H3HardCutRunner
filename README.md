@@ -74,8 +74,8 @@ environment produces a C/D comparison. D also requires the official Fun
 ControlNet node and patch model; no RunningHub availability is assumed.
 
 A, B, C, and D are validation candidates, not proven final-production
-runners. Keep every node type as a separate module so they can be tested
-independently.
+runners. Legacy runner variants have separate modules; the seven C Modular
+classes share one Python module but register as independent canvas nodes.
 Install this directory under `ComfyUI/custom_nodes/` and restart ComfyUI.
 
 ## Repository layout and C Modular checks
@@ -105,3 +105,13 @@ requires the immutable C baseline under the surrounding project directory's
 `H3_C_PROJECT_ROOT` to the project directory containing those two folders.
 The baseline and generated workflow are deliberately not part of this plugin
 repository. Building and unit tests do not execute RunningHub generation.
+
+For the diagnostic A2 copy only, run
+`python tools/build_h3_modular_c.py --a2-force-refs`. It reads the current
+formal C JSON without overwriting it and writes
+`outputs/H3_V16_hardcut_runner_RH_SCENE_VLM_C_A2_FORCE_REFS.json` with
+`manual_force_present_indices=1,9` on `H3CShotPolicy`. The formal C builder
+emits the same optional input with a blank default; A2 narrows the diagnostic
+comparison to the two whole-outfit reversion shots.
+An explicit force-empty/force-present overlap fails closed; the override
+does not validate or fix other sources of appearance or geometry drift.

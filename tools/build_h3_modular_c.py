@@ -16,6 +16,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = Path(os.environ.get("H3_C_PROJECT_ROOT", REPO_ROOT.parents[2])).resolve()
 BASE = PROJECT_ROOT / "work" / "modular_c_baseline_20261001" / "H3_V16_hardcut_runner_RH_SCENE_VLM_C.json"
 TARGET = PROJECT_ROOT / "outputs" / "H3_V16_hardcut_runner_RH_SCENE_VLM_C.json"
+A2_TARGET = PROJECT_ROOT / "outputs" / "H3_V16_hardcut_runner_RH_SCENE_VLM_C_A2_FORCE_REFS.json"
+A2_FORCE_PRESENT = "1,9"
 
 
 def make_node(node_id, node_type, title, inputs, outputs, pos, size=(310, 180), widgets=None):
@@ -74,13 +76,14 @@ def build():
          [("shot_rgb", "IMAGE"), ("depth_ref_video", "IMAGE"), ("original_f", "INT"), ("work_l", "INT"), ("shot_seed", "INT"), ("shot_number", "INT"), ("range", "STRING")], (1840, 80), (360, 260), []),
         (716, "H3CShotPolicy", "03  Shot / Reference Policy",
          [("shot_prompts", "STRING"), ("empty_shot_indices", "STRING"), ("shot_number", "INT"), ("shot_count", "INT"), ("seed", "INT"),
-          ("picture1", "IMAGE"), ("picture2", "IMAGE"), ("picture3", "IMAGE"), ("manual_force_empty_indices", "STRING")],
+          ("picture1", "IMAGE"), ("picture2", "IMAGE"), ("picture3", "IMAGE"),
+          ("manual_force_empty_indices", "STRING"), ("manual_force_present_indices", "STRING")],
          [("picture1", "IMAGE"), ("picture2", "IMAGE"), ("picture3", "IMAGE"), ("strict_empty", "BOOLEAN"),
           ("allow_secondary_humans", "BOOLEAN"), ("inject_target_references", "BOOLEAN"),
           ("subject_mode", "STRING"), ("secondary_human_presence", "STRING"), ("source_prop_policy", "STRING"),
           ("reason", "STRING"), ("report", "STRING"), ("picture3_present", "BOOLEAN"),
           ("picture1_used", "BOOLEAN"), ("picture2_used", "BOOLEAN"), ("picture3_used", "BOOLEAN"), ("seed", "INT")],
-         (2220, 80), (380, 560), [""]),
+         (2220, 80), (380, 590), ["", ""]),
         (717, "H3CPromptCompiler", "04  First / Second Prompt Compiler",
          [("shot_prompts", "STRING"), ("shot_number", "INT"), ("prompt_first", "STRING"),
           ("prompt_second", "STRING"), ("strict_empty", "BOOLEAN"), ("allow_secondary_humans", "BOOLEAN"),
@@ -281,7 +284,7 @@ def build():
         700: (1650, 80), 728: (1650, 870), 729: (1970, 870),
         705: (1650, 1080), 714: (2180, 80), 732: (2180, 320),
         715: (2180, 530), 702: (2280, 820), 703: (2280, 920),
-        716: (2570, 80), 730: (2570, 670), 717: (2570, 880),
+        716: (2570, 80), 730: (2570, 690), 717: (2570, 890),
         731: (2570, 1240), 721: (2990, 80), 726: (2990, 620),
         727: (2990, 900),
         629: (3360, 80), 628: (3360, 490), 625: (3360, 600),
@@ -342,5 +345,28 @@ def build():
     return len(nodes), len(links)
 
 
+def build_a2_force_refs():
+    """Copy the current formal C canvas; set only Policy's diagnostic override."""
+    data = json.loads(TARGET.read_text(encoding="utf-8"))
+    policy = next(n for n in data["nodes"] if n["id"] == 716 and n["type"] == "H3CShotPolicy")
+    if [x["name"] for x in policy["inputs"]][-2:] != [
+        "manual_force_empty_indices", "manual_force_present_indices"
+    ]:
+        raise ValueError("formal C Policy input contract changed")
+    if policy.get("widgets_values") != ["", ""]:
+        raise ValueError("formal C Policy widget contract changed")
+    policy["widgets_values"][1] = A2_FORCE_PRESENT
+    data.setdefault("extra", {})["candidate_variant"] = "C_MODULAR_A2_FORCE_REFS_RH_AB_PENDING"
+    data["extra"]["a2_force_present_indices"] = A2_FORCE_PRESENT
+    A2_TARGET.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return len(data["nodes"]), len(data["links"])
+
+
 if __name__ == "__main__":
-    print("nodes, links =", build())
+    import sys
+    if sys.argv[1:] == ["--a2-force-refs"]:
+        print("A2 nodes, links =", build_a2_force_refs())
+    elif not sys.argv[1:]:
+        print("nodes, links =", build())
+    else:
+        raise SystemExit("usage: build_h3_modular_c.py [--a2-force-refs]")
