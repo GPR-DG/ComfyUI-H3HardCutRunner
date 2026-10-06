@@ -115,3 +115,14 @@ emits the same optional input with a blank default; A2 narrows the diagnostic
 comparison to the two whole-outfit reversion shots.
 An explicit force-empty/force-present overlap fails closed; the override
 does not validate or fix other sources of appearance or geometry drift.
+
+## Modular-C REF2VA / SelfLift Adapters
+
+This plugin adds four Modular-C nodes for REF2VA / SelfLift shot preparation:
+
+- `H3CShotDualRefPad`
+- `H3CShotGuideWindowPlanner`
+- `H3CShotGuideWindowSelect`
+- `H3CShotGuideWindowAppend`
+
+The adapter contract keeps RGB and Depth synchronized per shot, pads only with the current shot tail frame, and uses donor 124 / 102 / 22. AddGuide state resets after HardCut, with a 24fps upstream contract. H3 / AddGuide / SelfLift continue to use the existing nodes. RH / CUDA / GPU neural execution still requires real-device verification.
