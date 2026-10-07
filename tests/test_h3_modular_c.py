@@ -9,6 +9,7 @@ import os
 import sys
 import types
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import numpy as np
@@ -76,6 +77,9 @@ def load_package():
 class ModularCContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        host_modules = patch.dict(sys.modules)
+        host_modules.start()
+        cls.addClassCleanup(host_modules.stop)
         cls.package = load_package()
 
     def test_registered_nodes_have_comfy_contracts(self):
@@ -362,7 +366,7 @@ class ModularCContractTests(unittest.TestCase):
                                          "auto", 1, 0.18, 8)
         finally:
             c._detect_hard_cuts, c._SceneVLMInvoker = old_detect, old_invoker
-        self.assertEqual(len(out), 10)
+        self.assertEqual(len(out), 11)  # orientation is append-only; old slots stay 0..9
         raw = [json.loads(line) for line in out[3].splitlines()]
         self.assertEqual(raw[0]["shot"], 1)
         self.assertIn('"scene": "red room"', raw[0]["raw"])
@@ -372,6 +376,7 @@ class ModularCContractTests(unittest.TestCase):
         self.assertEqual(json.loads(out[7]), {"shot": 1, "value": "present"})
         self.assertEqual(json.loads(out[8]), {"shot": 1, "value": "present"})
         self.assertIn("AILab_QwenVL_Advanced", out[9])
+        self.assertEqual(json.loads(out[10])["value"], "uncertain")
 
     def test_production_json_has_modular_ancestry_and_no_legacy_runner(self):
         workflow = json.loads(WORKFLOW.read_text(encoding="utf-8"))
@@ -435,6 +440,13 @@ class ModularCContractTests(unittest.TestCase):
                 fields = {**schema.get("required", {}), **schema.get("optional", {})}
                 self.assertEqual({x["name"] for x in node["inputs"]}, set(fields))
                 self.assertEqual([x["name"] for x in node["outputs"]], list(klass.RETURN_NAMES))
+            elif node["type"] == "H3ShotSceneVLM":
+                # Legacy canvases can store the old output prefix; no slot may move.
+                klass = self.package.NODE_CLASS_MAPPINGS[node["type"]]
+                count = len(node["outputs"])
+                self.assertLessEqual(count, len(klass.RETURN_NAMES))
+                self.assertEqual([x["name"] for x in node["outputs"]], list(klass.RETURN_NAMES[:count]))
+                self.assertEqual([x["type"] for x in node["outputs"]], list(klass.RETURN_TYPES[:count]))
         self.assertEqual(sum(1 for x in nodes.values() if x["type"] == "SaveVideo"), 1)
         self.assertEqual(sum(1 for x in nodes.values() if x["type"] == "H3HardCutRunnerSceneVLM"), 0)
 
@@ -529,8 +541,13 @@ class ModularCContractTests(unittest.TestCase):
         old_nodes = {n["id"]: n for n in old["nodes"]}
         new_nodes = {n["id"]: n for n in new["nodes"]}
         self.assertEqual(set(new_nodes), set(old_nodes))
-        for node_id in old_nodes.keys() - {716}:
+        for node_id in old_nodes.keys() - {700, 716}:
             self.assertEqual(new_nodes[node_id], old_nodes[node_id])
+        self.assertEqual({k:v for k,v in new_nodes[700].items() if k != "outputs"},
+                         {k:v for k,v in old_nodes[700].items() if k != "outputs"})
+        self.assertEqual(new_nodes[700]["outputs"][:len(old_nodes[700]["outputs"])], old_nodes[700]["outputs"])
+        self.assertEqual([x["name"] for x in new_nodes[700]["outputs"]],
+                         list(self.package.NODE_CLASS_MAPPINGS["H3ShotSceneVLM"].RETURN_NAMES))
         policy = new_nodes[716]
         self.assertEqual(policy["inputs"], old_nodes[716]["inputs"])
         self.assertEqual(old_nodes[716]["widgets_values"], ["", ""])

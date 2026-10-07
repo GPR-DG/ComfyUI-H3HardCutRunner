@@ -43,6 +43,9 @@ JSON object and no markdown. Use this schema:
 {
     "subject_mode": "present",
     "secondary_human_presence": "none",
+  "orientation": "uncertain",
+  "orientation_reason": "short evidence about primary-protagonist viewing direction only",
+  "orientation_evidence": {"begin": "uncertain", "middle": "uncertain", "end": "uncertain", "all_sampled_frames_same": false},
   "depicted_human_like_objects": "posters, photographs, screen images, advertisements, mannequins, statues, or other human-like depictions/objects; never classify as secondary humans",
   "scene": "factual description of the real environment",
   "space_structure": "architecture, layout, depth and spatial relations",
@@ -72,6 +75,23 @@ human-like depictions or objects are not humans for this field: set
 secondary_human_presence=none and record them only in environment_objects or
 depicted_human_like_objects. Never use secondary_human_presence to inject the
 target-person references.
+For orientation, analyze the source primary protagonist across this shot's
+supplied frames, not secondary humans, head gaze alone, or camera direction.
+Allowed values: front, back, side, mixed, turning, uncertain. Use front or back
+only for a consistently unambiguous front-facing or back-facing torso view.
+Use side for side views, turning for a front/back transition or continuous
+rotation, mixed for multiple orientations, and uncertain for occlusion,
+ambiguous views, or an absent primary protagonist. Do not collapse a changing
+shot to the first frame's direction. Put viewing-direction evidence only in
+orientation_reason, never in scene fields or expression_gaze_mouth.
+In orientation_evidence record the primary torso's begin, middle and end views
+from the supplied frames, using the same allowed orientation values. Set
+all_sampled_frames_same=true only when EVERY supplied frame unambiguously shows
+the same pure front or pure back view; any side/turn/occlusion/ambiguity makes
+it false. Do not invent evidence for unseen frames. For a shot containing only
+one or two frames, reuse its available views for these temporal labels.
+Orientation is only a viewing-direction label, not a body-shape or appearance
+description. It must never override subject_mode or reference-injection policy.
 Do not describe or infer the source person's identity, face, hair, body, clothing,
 clothing color, clothing material, or action choreography. A handheld item is
 subject-associated, not a fixed background object. A source-only temporary prop
@@ -154,6 +174,20 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _normalise_orientation(value: Any, subject_mode: str, evidence=None) -> str:
+    """Old/malformed VLM records must select both packages, never guess a side."""
+    if subject_mode != "present" or not isinstance(value, str):
+        return "uncertain"
+    orientation = value.strip().lower()
+    if orientation in {"front", "back"}:
+        if not isinstance(evidence, dict) or evidence.get("all_sampled_frames_same") is not True:
+            return "uncertain"
+        if any(not isinstance(evidence.get(phase), str) or
+               evidence[phase].strip().lower() != orientation for phase in ("begin", "middle", "end")):
+            return "uncertain"
+    return orientation if orientation in {"front", "back", "side", "mixed", "turning", "uncertain"} else "uncertain"
+
+
 def _normalise_scene_record(raw: str, shot_id: int) -> dict[str, Any]:
     obj = _clean_json_object(raw)
     mode = _text(obj.get("subject_mode")).lower()
@@ -210,6 +244,12 @@ def _normalise_scene_record(raw: str, shot_id: int) -> dict[str, Any]:
         "subject_mode": mode,
         "secondary_human_presence": secondary_human_presence,
         "scene_fields": scene_fields,
+        "orientation": _normalise_orientation(obj.get("orientation"), mode, obj.get("orientation_evidence")),
+        "orientation_evidence": obj.get("orientation_evidence") if isinstance(obj.get("orientation_evidence"), dict) else {},
+        "orientation_reason": (
+            "source primary protagonist absent; orientation not trusted" if mode == "absent"
+            else _text(obj.get("orientation_reason")) or "VLM evidence not provided"
+        ),
     }
     if prop_policy in {"present", "absent", "uncertain", "none"}:
         record["source_prop_policy"] = prop_policy
@@ -224,6 +264,9 @@ def _parse_scene_prompts(value: str) -> dict[int, dict[str, Any]]:
     if not structured:
         for record in rows.values():
             record.setdefault("secondary_human_presence", "none")
+            record["orientation"] = "uncertain"
+            record["orientation_reason"] = "legacy record without orientation evidence"
+            record["orientation_evidence"] = {}
         return rows
     for line in lines:
         obj = json.loads(line)
@@ -238,6 +281,12 @@ def _parse_scene_prompts(value: str) -> dict[int, dict[str, Any]]:
             if secondary not in {"none", "present", "uncertain"}:
                 secondary = "uncertain"
         record["secondary_human_presence"] = secondary
+        record["orientation"] = _normalise_orientation(obj.get("orientation"), record["subject_mode"], obj.get("orientation_evidence"))
+        record["orientation_evidence"] = obj.get("orientation_evidence") if isinstance(obj.get("orientation_evidence"), dict) else {}
+        record["orientation_reason"] = (
+            "source primary protagonist absent; orientation not trusted" if record["subject_mode"] == "absent"
+            else _text(obj.get("orientation_reason")) or "orientation evidence not provided"
+        )
         scene_fields = obj.get("scene_fields")
         if isinstance(scene_fields, dict):
             record["scene_fields"] = scene_fields
@@ -663,11 +712,12 @@ class H3ShotSceneVLM:
             }
         }
 
-    RETURN_TYPES = ("STRING",) * 10
+    RETURN_TYPES = ("STRING",) * 11
     RETURN_NAMES = (
         "shot_prompts", "empty_shot_indices", "report", "raw_vlm_output",
         "normalised_vlm_output", "scene_fields", "subject_mode",
         "secondary_human_presence", "source_prop_policy", "vlm_runtime",
+        "shot_orientation",
     )
     FUNCTION = "run"
     CATEGORY = "video/MiniMaxH3"
@@ -694,6 +744,7 @@ class H3ShotSceneVLM:
         subject_modes: list[str] = []
         secondary_modes: list[str] = []
         source_props: list[str] = []
+        orientations: list[str] = []
         empty: list[str] = []
         report = [
             "H3ShotSceneVLM: deterministic shot-local analysis",
@@ -719,6 +770,13 @@ class H3ShotSceneVLM:
                 shot_frame_count=int(end - start),
             )
             record = _normalise_scene_record(response, shot_index)
+            sampled = scene_vlm.report_snapshot().get("actual_sampled_frame_count")
+            record["orientation_sampled_frames"] = sampled
+            if record["orientation"] in {"front", "back"} and (
+                sampled is None or (int(sampled) < 3 and int(sampled) < end - start)
+            ):
+                record["orientation"] = "uncertain"
+                record["orientation_reason"] += "; insufficient temporal frame coverage for a single package"
             record["shot"] = shot_index
             raw_rows.append(json.dumps({"shot": shot_index, "raw": response}, ensure_ascii=False, separators=(",", ":")))
             rows.append(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
@@ -726,6 +784,7 @@ class H3ShotSceneVLM:
             subject_modes.append(json.dumps({"shot": shot_index, "value": record["subject_mode"]}, ensure_ascii=False, separators=(",", ":")))
             secondary_modes.append(json.dumps({"shot": shot_index, "value": record["secondary_human_presence"]}, ensure_ascii=False, separators=(",", ":")))
             source_props.append(json.dumps({"shot": shot_index, "value": record.get("source_prop_policy", "unspecified")}, ensure_ascii=False, separators=(",", ":")))
+            orientations.append(json.dumps({"shot": shot_index, "value": record["orientation"], "reason": record["orientation_reason"]}, ensure_ascii=False, separators=(",", ":")))
             if (
                 record["subject_mode"] == "absent"
                 and record["secondary_human_presence"] == "none"
@@ -737,6 +796,7 @@ class H3ShotSceneVLM:
                 f"secondary_humans={record['secondary_human_presence']} "
                 f"strict_empty={record['subject_mode'] == 'absent' and record['secondary_human_presence'] == 'none'} "
                 f"source_prop={record.get('source_prop_policy', 'unspecified')} "
+                f"orientation={record['orientation']} orientation_reason={record['orientation_reason']!r} "
                 f"scene_metadata={json.dumps(record['scene_fields'], ensure_ascii=False, separators=(',', ':'))}"
             )
         if len(rows) != len(shots):
@@ -745,7 +805,8 @@ class H3ShotSceneVLM:
         report.append("vlm_runtime=" + runtime_json)
         return ("\n".join(rows), ",".join(empty), "\n".join(report), "\n".join(raw_rows),
                 "\n".join(rows), "\n".join(scene_field_rows), "\n".join(subject_modes),
-                "\n".join(secondary_modes), "\n".join(source_props), runtime_json)
+                "\n".join(secondary_modes), "\n".join(source_props), runtime_json,
+                "\n".join(orientations))
 
 
 class H3OptionalPicture3:

@@ -20,6 +20,21 @@ A2_TARGET = PROJECT_ROOT / "outputs" / "H3_V16_hardcut_runner_RH_SCENE_VLM_C_A2_
 A2_FORCE_PRESENT = "1,9"
 
 
+def _ensure_scene_vlm_outputs(node):
+    """Append missing sockets only; never move or duplicate existing outputs."""
+    names = ("shot_prompts", "empty_shot_indices", "report", "raw_vlm_output",
+             "normalised_vlm_output", "scene_fields", "subject_mode",
+             "secondary_human_presence", "source_prop_policy", "vlm_runtime", "shot_orientation")
+    outputs = node["outputs"]
+    if len(outputs) > len(names) or any(
+        out.get("name") != names[i] or out.get("type") != "STRING" or
+        out.get("slot_index", i) != i for i, out in enumerate(outputs)
+    ):
+        raise ValueError("SceneVLM output sockets must preserve the append-only schema")
+    for i in range(len(outputs), len(names)):
+        outputs.append({"name": names[i], "type": "STRING", "links": None, "slot_index": i, "shape": 3})
+
+
 def make_node(node_id, node_type, title, inputs, outputs, pos, size=(310, 180), widgets=None):
     return {
         "id": node_id, "type": node_type, "pos": list(pos), "size": list(size),
@@ -52,12 +67,7 @@ def build():
             out["links"] = None
         n["mode"] = 0
 
-    # Append-only: first three Scene VLM outputs remain byte-compatible.
-    for name in ("raw_vlm_output", "normalised_vlm_output", "scene_fields", "subject_mode",
-                 "secondary_human_presence", "source_prop_policy", "vlm_runtime"):
-        i = len(nodes[700]["outputs"])
-        nodes[700]["outputs"].append({"name": name, "type": "STRING", "links": None,
-                                       "slot_index": i, "shape": 3})
+    _ensure_scene_vlm_outputs(nodes[700])
 
     for i in (629, 646):
         ref3 = {"name": "ref_images.ref_image_2", "type": "IMAGE", "link": None,
@@ -346,8 +356,10 @@ def build():
 
 
 def build_a2_force_refs():
-    """Copy the current formal C canvas; set only Policy's diagnostic override."""
+    """Copy C; append missing VLM sockets and set the sample Policy override."""
     data = json.loads(TARGET.read_text(encoding="utf-8"))
+    vlm = next(n for n in data["nodes"] if n["id"] == 700 and n["type"] == "H3ShotSceneVLM")
+    _ensure_scene_vlm_outputs(vlm)
     policy = next(n for n in data["nodes"] if n["id"] == 716 and n["type"] == "H3CShotPolicy")
     if [x["name"] for x in policy["inputs"]][-2:] != [
         "manual_force_empty_indices", "manual_force_present_indices"
