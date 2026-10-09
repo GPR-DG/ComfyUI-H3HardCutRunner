@@ -47,3 +47,21 @@ NODE_DISPLAY_NAME_MAPPINGS.update(C_REF_ADAPTER_NODE_DISPLAY_NAME_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS.update(C_REFERENCE_ROUTER_NODE_DISPLAY_NAME_MAPPINGS)
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
+# Background nodes are optional at import time so an existing installation keeps
+# its original nodes visible when NumPy/OpenCV are not installed yet.
+try:
+    from .h3_background_nodes import (
+        NODE_CLASS_MAPPINGS as BACKGROUND_NODE_CLASS_MAPPINGS,
+        NODE_DISPLAY_NAME_MAPPINGS as BACKGROUND_NODE_DISPLAY_NAME_MAPPINGS,
+    )
+except Exception:
+    import logging
+    logging.getLogger(__name__).warning(
+        "H3 background nodes unavailable; existing H3 nodes remain registered.",
+        exc_info=True,
+    )
+    BACKGROUND_NODE_CLASS_MAPPINGS = {}
+    BACKGROUND_NODE_DISPLAY_NAME_MAPPINGS = {}
+
+NODE_CLASS_MAPPINGS.update(BACKGROUND_NODE_CLASS_MAPPINGS)
+NODE_DISPLAY_NAME_MAPPINGS.update(BACKGROUND_NODE_DISPLAY_NAME_MAPPINGS)
